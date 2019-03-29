@@ -1,13 +1,12 @@
-hash: 19e839d789abb0f75c423828561ee956a457acf04cc4e6520a5f0463d34f2a7a
-updated: 2019-02-28T16:02:01.55040331+06:00
+hash: 61b9d37f8b2513ec45570be9a9d0bdc7f9c91a2fcf7a4a57d52b98ce66a2d0bd
+updated: 2019-03-29T15:35:49.169049756+06:00
 imports:
 - name: cloud.google.com/go
-  version: 3b1ae45394a234c385be014e9a488f2bb6eef821
+  version: 0fd7230b2a7505833d5f69b75cbd6c9582401479
   subpackages:
   - compute/metadata
-  - internal
 - name: contrib.go.opencensus.io/exporter/ocagent
-  version: 060e6898ab87d943e2ff1090efb927fbc5181cea
+  version: 0758abcb21781452e3f21b8d7944e0da2a16d736
 - name: github.com/armon/go-metrics
   version: f0300d1749da6fa982027e449ec0c7a145510c3c
 - name: github.com/aws/aws-sdk-go
@@ -72,7 +71,7 @@ imports:
   - gen-go/resource/v1
   - gen-go/trace/v1
 - name: github.com/cespare/xxhash
-  version: 3767db7a7e183c0ad3395680d460d0b61534ae7b
+  version: 48099fad606eafc26e3a569fad19ff510fff4df6
 - name: github.com/davecgh/go-spew
   version: 782f4967f2dc4564575ca782fe2d04090b5faca8
   subpackages:
@@ -82,12 +81,12 @@ imports:
 - name: github.com/go-ini/ini
   version: a9da9309fb4822643ceebb765f80025c35ac19a1
 - name: github.com/go-kit/kit
-  version: a8cc1630e08ad79caf184b550589ded1a16b203d
+  version: 10f464fb11741e507cbb5201eb889c37dd51dbab
   subpackages:
   - log
   - log/level
 - name: github.com/go-logfmt/logfmt
-  version: 07c9b44f60d7ffdfb7d8efe1ad539965737836dc
+  version: 432dd90af23366a89a611c020003fc8ba281ae5d
 - name: github.com/gogo/protobuf
   version: 4cbf7e384e768b4e01799441fdf2a706a5635ae7
   subpackages:
@@ -110,7 +109,7 @@ imports:
   - ptypes/timestamp
   - ptypes/wrappers
 - name: github.com/golang/snappy
-  version: 2a8bb927dd31d8daada140a5d09578521ce5c36a
+  version: 553a641470496b2327abcac10b36396bd98e45c9
 - name: github.com/google/btree
   version: 7d79101e329e5a3adf994758c578dab82b90c017
 - name: github.com/google/gofuzz
@@ -136,23 +135,23 @@ imports:
   - openstack/utils
   - pagination
 - name: github.com/gorilla/mux
-  version: 8559a4f775fc329165fe32bd4c2543de8ada8fce
+  version: a7962380ca08b5a188038c69871b8d3fbdf31e89
 - name: github.com/gregjones/httpcache
   version: 787624de3eb7bd915c329cba748687a3b22666a6
   subpackages:
   - diskcache
 - name: github.com/grpc-ecosystem/grpc-gateway
-  version: 70fc086ac9ea0b499fd55f4e002e4ec581d000c5
+  version: 719aaadb1a4f7b11606d454e266fe5c5f789796f
   subpackages:
-  - internal
   - runtime
+  - runtime/internal
   - utilities
 - name: github.com/hashicorp/consul
-  version: 4833c5dee528559548b69ed4e54e27ce35f3fbe0
+  version: 0d1b496a5255e7387d8e9358033c85be66305a3d
   subpackages:
   - api
 - name: github.com/hashicorp/go-cleanhttp
-  version: e8ab9daed8d1ddd2d3c4efba338fe2eeae2e4f18
+  version: eda1e5db218aad1db63ca4642c8906b26bcf2744
 - name: github.com/hashicorp/go-immutable-radix
   version: 27df80928bb34bb1b0d6d0e01b9e679902e7a6b5
 - name: github.com/hashicorp/go-rootcerts
@@ -162,7 +161,7 @@ imports:
   subpackages:
   - simplelru
 - name: github.com/hashicorp/serf
-  version: b89a09ebd4b1b570e0076d5097272e67c10ac4f6
+  version: e516ab3e97c38fc10fb0dbde0437751823d08300
   subpackages:
   - coordinate
 - name: github.com/jmespath/go-jmespath
@@ -176,7 +175,7 @@ imports:
   subpackages:
   - pbutil
 - name: github.com/miekg/dns
-  version: 092d7745b47c1a19a6533514ff7a05387b5c5bf9
+  version: 8fc2e5773bbd308ca2fcc962fd8d25c1bd0f6743
 - name: github.com/mitchellh/go-homedir
   version: af06845cf3004701891bf4fdb884bfe4920b3727
 - name: github.com/mitchellh/mapstructure
@@ -198,6 +197,7 @@ imports:
   subpackages:
   - prometheus
   - prometheus/internal
+  - prometheus/promauto
   - prometheus/promhttp
 - name: github.com/prometheus/client_model
   version: fa8ad6fec33561be4280a8f0514318c79d7f6cb6
@@ -216,7 +216,7 @@ imports:
   subpackages:
   - xfs
 - name: github.com/prometheus/prometheus
-  version: 84df210c410a0684ec1a05479bfa54458562695e
+  version: 4d60eb36dcbed725fcac5b27018574118f12fffb
   subpackages:
   - config
   - discovery/azure
@@ -233,6 +233,7 @@ imports:
   - discovery/triton
   - discovery/zookeeper
   - pkg/labels
+  - pkg/logging
   - pkg/relabel
   - pkg/timestamp
   - prompb
@@ -242,10 +243,11 @@ imports:
   - util/strutil
   - util/treecache
 - name: github.com/prometheus/tsdb
-  version: 10ba228e6baa4811818e04b1ab9b48110bb43d7b
+  version: 8921f18eb3e34d1e2a752ae0df5bbb94dc367cc7
   subpackages:
   - chunkenc
   - chunks
+  - encoding
   - fileutil
   - index
   - labels
@@ -255,7 +257,7 @@ imports:
   subpackages:
   - zk
 - name: go.opencensus.io
-  version: 22a302cdd30bb5e3c0c894c70decd0b53e96eda0
+  version: 2b5032d79456124f42db6b7eb19ac6c155449dc2
   subpackages:
   - exemplar
   - internal
@@ -302,7 +304,7 @@ imports:
   - jws
   - jwt
 - name: golang.org/x/sync
-  version: e225da77a7e68af35c70ccbf71af2b83e6acac3c
+  version: 37e7f081c4d4c64e13b10787722085407fe5d15f
   subpackages:
   - errgroup
   - semaphore
@@ -323,7 +325,7 @@ imports:
   subpackages:
   - rate
 - name: google.golang.org/api
-  version: 98825bb0065da4054e5da6db34f5fc598e50bc24
+  version: 3639d6d93f377f39a1de765fa4ef37b3c7ca8bd9
   subpackages:
   - compute/v1
   - gensupport
@@ -331,7 +333,7 @@ imports:
   - googleapi/internal/uritemplates
   - support/bundler
 - name: google.golang.org/appengine
-  version: 12d5545dc1cfa6047a286d5e853841b6471f4c19
+  version: 2e4a801b39fc199db615bfca7d0b9f8cd9580599
   subpackages:
   - internal
   - internal/app_identity
@@ -349,7 +351,7 @@ imports:
   - googleapis/rpc/status
   - protobuf/field_mask
 - name: google.golang.org/grpc
-  version: 6b51017f791ae1cfbec89c52efdf444b13b550ef
+  version: 168a6198bcb0ef175f7dacec0b8691fc141dc9b8
   subpackages:
   - balancer
   - balancer/base
@@ -358,9 +360,12 @@ imports:
   - connectivity
   - credentials
   - encoding
-  - grpclb/grpc_lb_v1/messages
+  - encoding/proto
   - grpclog
   - internal
+  - internal/backoff
+  - internal/channelz
+  - internal/grpcrand
   - keepalive
   - metadata
   - naming
