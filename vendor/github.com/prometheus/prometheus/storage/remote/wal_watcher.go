@@ -19,6 +19,7 @@ import (
 	"math"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/prometheus/pkg/timestamp"
 	"github.com/prometheus/tsdb"
 	"github.com/prometheus/tsdb/fileutil"
 	"github.com/prometheus/tsdb/wal"
@@ -40,50 +42,14 @@ const (
 )
 
 var (
-	watcherSamplesRecordsRead = prometheus.NewCounterVec(
+	watcherRecordsRead = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: "prometheus",
 			Subsystem: "wal_watcher",
-			Name:      "samples_records_read_total",
-			Help:      "Number of samples records read by the WAL watcher from the WAL.",
+			Name:      "records_read_total",
+			Help:      "Number of records read by the WAL watcher from the WAL.",
 		},
-		[]string{queue},
-	)
-	watcherSeriesRecordsRead = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: "prometheus",
-			Subsystem: "wal_watcher",
-			Name:      "series_records_read_total",
-			Help:      "Number of series records read by the WAL watcher from the WAL.",
-		},
-		[]string{queue},
-	)
-	watcherTombstoneRecordsRead = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: "prometheus",
-			Subsystem: "wal_watcher",
-			Name:      "tombstone_records_read_total",
-			Help:      "Number of tombstone records read by the WAL watcher from the WAL.",
-		},
-		[]string{queue},
-	)
-	watcherInvalidRecordsRead = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: "prometheus",
-			Subsystem: "wal_watcher",
-			Name:      "invalid_records_read_total",
-			Help:      "Number of invalid records read by the WAL watcher from the WAL.",
-		},
-		[]string{queue},
-	)
-	watcherUnknownTypeRecordsRead = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: "prometheus",
-			Subsystem: "wal_watcher",
-			Name:      "unknown_records_read_total",
-			Help:      "Number of records read by the WAL watcher from the WAL of an unknown record type.",
-		},
-		[]string{queue},
+		[]string{queue, "type"},
 	)
 	watcherRecordDecodeFails = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -115,11 +81,7 @@ var (
 )
 
 func init() {
-	prometheus.MustRegister(watcherSamplesRecordsRead)
-	prometheus.MustRegister(watcherSeriesRecordsRead)
-	prometheus.MustRegister(watcherTombstoneRecordsRead)
-	prometheus.MustRegister(watcherInvalidRecordsRead)
-	prometheus.MustRegister(watcherUnknownTypeRecordsRead)
+	prometheus.MustRegister(watcherRecordsRead)
 	prometheus.MustRegister(watcherRecordDecodeFails)
 	prometheus.MustRegister(watcherSamplesSentPreTailing)
 	prometheus.MustRegister(watcherCurrentSegment)
@@ -133,153 +95,190 @@ type writeTo interface {
 
 // WALWatcher watches the TSDB WAL for a given WriteTo.
 type WALWatcher struct {
-	name   string
-	writer writeTo
-	logger log.Logger
-	walDir string
-
-	currentSegment int
+	name           string
+	writer         writeTo
+	logger         log.Logger
+	walDir         string
 	lastCheckpoint string
-	startTime      int64
 
-	samplesReadMetric       prometheus.Counter
-	seriesReadMetric        prometheus.Counter
-	tombstonesReadMetric    prometheus.Counter
-	invalidReadMetric       prometheus.Counter
-	unknownReadMetric       prometheus.Counter
+	startTime int64
+
+	recordsReadMetric       *prometheus.CounterVec
 	recordDecodeFailsMetric prometheus.Counter
 	samplesSentPreTailing   prometheus.Counter
 	currentSegmentMetric    prometheus.Gauge
 
 	quit chan struct{}
+	done chan struct{}
+
+	// For testing, stop when we hit this segment.
+	maxSegment int
 }
 
 // NewWALWatcher creates a new WAL watcher for a given WriteTo.
-func NewWALWatcher(logger log.Logger, name string, writer writeTo, walDir string, startTime int64) *WALWatcher {
+func NewWALWatcher(logger log.Logger, name string, writer writeTo, walDir string) *WALWatcher {
 	if logger == nil {
 		logger = log.NewNopLogger()
 	}
-	w := &WALWatcher{
-		logger:    logger,
-		writer:    writer,
-		walDir:    path.Join(walDir, "wal"),
-		startTime: startTime,
-		name:      name,
-		quit:      make(chan struct{}),
+	return &WALWatcher{
+		logger: logger,
+		writer: writer,
+		walDir: path.Join(walDir, "wal"),
+		name:   name,
+		quit:   make(chan struct{}),
+		done:   make(chan struct{}),
+
+		recordsReadMetric:       watcherRecordsRead.MustCurryWith(prometheus.Labels{queue: name}),
+		recordDecodeFailsMetric: watcherRecordDecodeFails.WithLabelValues(name),
+		samplesSentPreTailing:   watcherSamplesSentPreTailing.WithLabelValues(name),
+		currentSegmentMetric:    watcherCurrentSegment.WithLabelValues(name),
+
+		maxSegment: -1,
 	}
-
-	w.samplesReadMetric = watcherSamplesRecordsRead.WithLabelValues(w.name)
-	w.seriesReadMetric = watcherSeriesRecordsRead.WithLabelValues(w.name)
-	w.tombstonesReadMetric = watcherTombstoneRecordsRead.WithLabelValues(w.name)
-	w.unknownReadMetric = watcherUnknownTypeRecordsRead.WithLabelValues(w.name)
-	w.invalidReadMetric = watcherInvalidRecordsRead.WithLabelValues(w.name)
-	w.recordDecodeFailsMetric = watcherRecordDecodeFails.WithLabelValues(w.name)
-	w.samplesSentPreTailing = watcherSamplesSentPreTailing.WithLabelValues(w.name)
-	w.currentSegmentMetric = watcherCurrentSegment.WithLabelValues(w.name)
-
-	return w
 }
 
+// Start the WALWatcher.
 func (w *WALWatcher) Start() {
 	level.Info(w.logger).Log("msg", "starting WAL watcher", "queue", w.name)
-	go w.runWatcher()
+	go w.loop()
 }
 
+// Stop the WALWatcher.
 func (w *WALWatcher) Stop() {
-	level.Info(w.logger).Log("msg", "stopping WAL watcher", "queue", w.name)
 	close(w.quit)
+	<-w.done
+	level.Info(w.logger).Log("msg", "WAL watcher stopped", "queue", w.name)
 }
 
-func (w *WALWatcher) runWatcher() {
-	// The WAL dir may not exist when Prometheus first starts up.
-	for {
-		if _, err := os.Stat(w.walDir); os.IsNotExist(err) {
-			time.Sleep(time.Second)
-		} else {
-			break
+func (w *WALWatcher) loop() {
+	defer close(w.done)
+
+	// We may encourter failures processing the WAL; we should wait and retry.
+	for !isClosed(w.quit) {
+		w.startTime = timestamp.FromTime(time.Now())
+		if err := w.run(); err != nil {
+			level.Error(w.logger).Log("msg", "error tailing WAL", "err", err)
+		}
+
+		select {
+		case <-w.quit:
+			return
+		case <-time.After(5 * time.Second):
 		}
 	}
+}
 
-	nw, err := wal.New(nil, nil, w.walDir)
+func (w *WALWatcher) run() error {
+	_, lastSegment, err := w.firstAndLast()
 	if err != nil {
-		level.Error(w.logger).Log("err", err)
-		return
-	}
-
-	first, last, err := nw.Segments()
-	if err != nil {
-		level.Error(w.logger).Log("err", err)
-		return
-	}
-
-	if last == -1 {
-		level.Error(w.logger).Log("err", err)
-		return
+		return errors.Wrap(err, "wal.Segments")
 	}
 
 	// Backfill from the checkpoint first if it exists.
-	dir, _, err := tsdb.LastCheckpoint(w.walDir)
+	lastCheckpoint, checkpointIndex, err := tsdb.LastCheckpoint(w.walDir)
 	if err != nil && err != tsdb.ErrNotFound {
-		level.Error(w.logger).Log("msg", "error looking for existing checkpoint, some samples may be dropped", "err", errors.Wrap(err, "find last checkpoint"))
+		return errors.Wrap(err, "tsdb.LastCheckpoint")
 	}
 
-	level.Debug(w.logger).Log("msg", "reading checkpoint", "dir", dir)
 	if err == nil {
-		w.lastCheckpoint = dir
-		err = w.readCheckpoint(dir)
-		if err != nil {
-			level.Error(w.logger).Log("msg", "error reading existing checkpoint, some samples may be dropped", "err", err)
+		if err = w.readCheckpoint(lastCheckpoint); err != nil {
+			return errors.Wrap(err, "readCheckpoint")
 		}
 	}
+	w.lastCheckpoint = lastCheckpoint
 
-	w.currentSegment = first
-	w.currentSegmentMetric.Set(float64(w.currentSegment))
-	segment, err := wal.OpenReadSegment(wal.SegmentName(w.walDir, w.currentSegment))
-	// TODO: callum, is this error really fatal?
+	currentSegment, err := w.findSegmentForIndex(checkpointIndex)
 	if err != nil {
-		level.Error(w.logger).Log("err", err)
-		return
+		return err
 	}
-	reader := wal.NewLiveReader(segment)
-	tail := false
 
-	for {
-		// If we've replayed the existing WAL, start tailing.
-		if w.currentSegment == last {
-			tail = true
-		}
-		if tail {
-			level.Info(w.logger).Log("msg", "watching segment", "segment", w.currentSegment)
-		} else {
-			level.Info(w.logger).Log("msg", "replaying segment", "segment", w.currentSegment)
-		}
+	level.Debug(w.logger).Log("msg", "tailing WAL", "lastCheckpoint", lastCheckpoint, "checkpointIndex", checkpointIndex, "currentSegment", currentSegment, "lastSegment", lastSegment)
+	for !isClosed(w.quit) {
+		w.currentSegmentMetric.Set(float64(currentSegment))
+		level.Debug(w.logger).Log("msg", "processing segment", "currentSegment", currentSegment)
 
 		// On start, after reading the existing WAL for series records, we have a pointer to what is the latest segment.
 		// On subsequent calls to this function, currentSegment will have been incremented and we should open that segment.
-		err := w.watch(nw, reader, tail)
-		segment.Close()
-		if err != nil {
-			level.Error(w.logger).Log("msg", "runWatcher is ending", "err", err)
-			return
+		if err := w.watch(currentSegment, currentSegment >= lastSegment); err != nil {
+			return err
 		}
 
-		w.currentSegment++
-		w.currentSegmentMetric.Set(float64(w.currentSegment))
-
-		segment, err = wal.OpenReadSegment(wal.SegmentName(w.walDir, w.currentSegment))
-		// TODO: callum, is this error really fatal?
-		if err != nil {
-			level.Error(w.logger).Log("err", err)
-			return
+		// For testing: stop when you hit a specific segment.
+		if currentSegment == w.maxSegment {
+			return nil
 		}
-		reader = wal.NewLiveReader(segment)
+
+		currentSegment++
 	}
+
+	return nil
+}
+
+// findSegmentForIndex finds the first segment greater than or equal to index.
+func (w *WALWatcher) findSegmentForIndex(index int) (int, error) {
+	refs, err := w.segments()
+	if err != nil {
+		return -1, nil
+	}
+
+	for _, r := range refs {
+		if r >= index {
+			return r, nil
+		}
+	}
+
+	return -1, errors.New("failed to find segment for index")
+}
+
+func (w *WALWatcher) firstAndLast() (int, int, error) {
+	refs, err := w.segments()
+	if err != nil {
+		return -1, -1, nil
+	}
+
+	if len(refs) == 0 {
+		return -1, -1, nil
+	}
+	return refs[0], refs[len(refs)-1], nil
+}
+
+// Copied from tsdb/wal/wal.go so we do not have to open a WAL.
+// Plan is to move WAL watcher to TSDB and dedupe these implementations.
+func (w *WALWatcher) segments() ([]int, error) {
+	files, err := fileutil.ReadDir(w.walDir)
+	if err != nil {
+		return nil, err
+	}
+
+	var refs []int
+	var last int
+	for _, fn := range files {
+		k, err := strconv.Atoi(fn)
+		if err != nil {
+			continue
+		}
+		if len(refs) > 0 && k > last+1 {
+			return nil, errors.New("segments are not sequential")
+		}
+		refs = append(refs, k)
+		last = k
+	}
+	sort.Ints(refs)
+
+	return refs, nil
 }
 
 // Use tail true to indicate that the reader is currently on a segment that is
 // actively being written to. If false, assume it's a full segment and we're
 // replaying it on start to cache the series records.
-func (w *WALWatcher) watch(wl *wal.WAL, reader *wal.LiveReader, tail bool) error {
+func (w *WALWatcher) watch(segmentNum int, tail bool) error {
+	segment, err := wal.OpenReadSegment(wal.SegmentName(w.walDir, segmentNum))
+	if err != nil {
+		return err
+	}
+	defer segment.Close()
+
+	reader := wal.NewLiveReader(w.logger, segment)
 
 	readTicker := time.NewTicker(readPeriod)
 	defer readTicker.Stop()
@@ -289,6 +288,7 @@ func (w *WALWatcher) watch(wl *wal.WAL, reader *wal.LiveReader, tail bool) error
 
 	segmentTicker := time.NewTicker(segmentCheckPeriod)
 	defer segmentTicker.Stop()
+
 	// If we're replaying the segment we need to know the size of the file to know
 	// when to return from watch and move on to the next segment.
 	size := int64(math.MaxInt64)
@@ -296,173 +296,207 @@ func (w *WALWatcher) watch(wl *wal.WAL, reader *wal.LiveReader, tail bool) error
 		segmentTicker.Stop()
 		checkpointTicker.Stop()
 		var err error
-		size, err = getSegmentSize(w.walDir, w.currentSegment)
+		size, err = getSegmentSize(w.walDir, segmentNum)
 		if err != nil {
-			level.Error(w.logger).Log("msg", "error getting segment size", "segment", w.currentSegment)
-			return errors.Wrap(err, "get segment size")
+			return errors.Wrap(err, "getSegmentSize")
 		}
 	}
 
 	for {
 		select {
 		case <-w.quit:
-			level.Info(w.logger).Log("msg", "quitting WAL watcher watch loop")
-			return errors.New("quit channel")
+			return nil
 
 		case <-checkpointTicker.C:
-			// Periodically check if there is a new checkpoint.
-			// As this is considered an optimisation, we ignore errors during
-			// checkpoint processing.
-
-			dir, _, err := tsdb.LastCheckpoint(w.walDir)
-			if err != nil && err != tsdb.ErrNotFound {
-				level.Error(w.logger).Log("msg", "error getting last checkpoint", "err", err)
-				continue
+			// Periodically check if there is a new checkpoint so we can garbage
+			// collect labels. As this is considered an optimisation, we ignore
+			// errors during checkpoint processing.
+			if err := w.garbageCollectSeries(segmentNum); err != nil {
+				level.Warn(w.logger).Log("msg", "error process checkpoint", "err", err)
 			}
-
-			if dir == w.lastCheckpoint {
-				continue
-			}
-
-			level.Info(w.logger).Log("msg", "new checkpoint detected", "last", w.lastCheckpoint, "new", dir)
-
-			d, err := checkpointNum(dir)
-			if err != nil {
-				level.Error(w.logger).Log("msg", "error parsing checkpoint", "err", err)
-				continue
-			}
-
-			if d >= w.currentSegment {
-				level.Info(w.logger).Log("msg", "current segment is behind the checkpoint, skipping reading of checkpoint", "current", fmt.Sprintf("%08d", w.currentSegment), "checkpoint", dir)
-				continue
-			}
-
-			w.lastCheckpoint = dir
-			// This potentially takes a long time, should we run it in another go routine?
-			err = w.readCheckpoint(w.lastCheckpoint)
-			if err != nil {
-				level.Error(w.logger).Log("err", err)
-			}
-			// Clear series with a checkpoint or segment index # lower than the checkpoint we just read.
-			w.writer.SeriesReset(d)
 
 		case <-segmentTicker.C:
-			_, last, err := wl.Segments()
+			_, last, err := w.firstAndLast()
 			if err != nil {
 				return errors.Wrap(err, "segments")
 			}
 
 			// Check if new segments exists.
-			if last <= w.currentSegment {
+			if last <= segmentNum {
 				continue
 			}
 
-			if err := w.readSegment(reader); err != nil {
-				// Ignore errors reading to end of segment, as we're going to move to
-				// next segment now.
-				level.Error(w.logger).Log("msg", "error reading to end of segment", "err", err)
+			err = w.readSegment(reader, segmentNum, tail)
+
+			// Ignore errors reading to end of segment whilst replaying the WAL.
+			if !tail {
+				if err != nil && err != io.EOF {
+					level.Warn(w.logger).Log("msg", "ignoring error reading to end of segment, may have dropped data", "err", err)
+				} else if reader.Offset() != size {
+					level.Warn(w.logger).Log("msg", "expected to have read whole segment, may have dropped data", "segment", segmentNum, "read", reader.Offset(), "size", size)
+				}
+				return nil
 			}
 
-			level.Info(w.logger).Log("msg", "a new segment exists, we should start reading it", "current", fmt.Sprintf("%08d", w.currentSegment), "new", fmt.Sprintf("%08d", last))
+			// Otherwise, when we are tailing, non-EOFs are fatal.
+			if err != io.EOF {
+				return err
+			}
+
 			return nil
 
 		case <-readTicker.C:
-			if err := w.readSegment(reader); err != nil && err != io.EOF {
-				level.Error(w.logger).Log("err", err)
-				return err
-			}
-			if reader.TotalRead() >= size && !tail {
-				level.Info(w.logger).Log("msg", "done replaying segment", "segment", w.currentSegment, "size", size, "read", reader.TotalRead())
+			err = w.readSegment(reader, segmentNum, tail)
+
+			// Ignore all errors reading to end of segment whilst replaying the WAL.
+			if !tail {
+				if err != nil && err != io.EOF {
+					level.Warn(w.logger).Log("msg", "ignoring error reading to end of segment, may have dropped data", "segment", segmentNum, "err", err)
+				} else if reader.Offset() != size {
+					level.Warn(w.logger).Log("msg", "expected to have read whole segment, may have dropped data", "segment", segmentNum, "read", reader.Offset(), "size", size)
+				}
 				return nil
 			}
+
+			// Otherwise, when we are tailing, non-EOFs are fatal.
+			if err != io.EOF {
+				return err
+			}
 		}
 	}
 }
 
-func (w *WALWatcher) readSegment(r *wal.LiveReader) error {
-	for r.Next() && !isClosed(w.quit) {
-		err := w.decodeRecord(r.Record())
-
-		// Intentionally skip over record decode errors.
-		if err != nil {
-			level.Error(w.logger).Log("err", err)
-		}
+func (w *WALWatcher) garbageCollectSeries(segmentNum int) error {
+	dir, _, err := tsdb.LastCheckpoint(w.walDir)
+	if err != nil && err != tsdb.ErrNotFound {
+		return errors.Wrap(err, "tsdb.LastCheckpoint")
 	}
-	return r.Err()
+
+	if dir == "" || dir == w.lastCheckpoint {
+		return nil
+	}
+	w.lastCheckpoint = dir
+
+	index, err := checkpointNum(dir)
+	if err != nil {
+		return errors.Wrap(err, "error parsing checkpoint filename")
+	}
+
+	if index >= segmentNum {
+		level.Debug(w.logger).Log("msg", "current segment is behind the checkpoint, skipping reading of checkpoint", "current", fmt.Sprintf("%08d", segmentNum), "checkpoint", dir)
+		return nil
+	}
+
+	level.Debug(w.logger).Log("msg", "new checkpoint detected", "new", dir, "currentSegment", segmentNum)
+
+	if err = w.readCheckpoint(dir); err != nil {
+		return errors.Wrap(err, "readCheckpoint")
+	}
+
+	// Clear series with a checkpoint or segment index # lower than the checkpoint we just read.
+	w.writer.SeriesReset(index)
+	return nil
 }
 
-func (w *WALWatcher) decodeRecord(rec []byte) error {
+func (w *WALWatcher) readSegment(r *wal.LiveReader, segmentNum int, tail bool) error {
 	var (
 		dec     tsdb.RecordDecoder
 		series  []tsdb.RefSeries
 		samples []tsdb.RefSample
 	)
-	switch dec.Type(rec) {
-	case tsdb.RecordSeries:
-		series, err := dec.Series(rec, series[:0])
-		if err != nil {
-			w.recordDecodeFailsMetric.Inc()
-			return err
-		}
-		w.seriesReadMetric.Add(float64(len(series)))
-		w.writer.StoreSeries(series, w.currentSegment)
 
-	case tsdb.RecordSamples:
-		samples, err := dec.Samples(rec, samples[:0])
-		if err != nil {
-			w.recordDecodeFailsMetric.Inc()
-			return err
-		}
-		var send []tsdb.RefSample
-		for _, s := range samples {
-			if s.T > w.startTime {
-				send = append(send, s)
+	for r.Next() && !isClosed(w.quit) {
+		rec := r.Record()
+		w.recordsReadMetric.WithLabelValues(recordType(dec.Type(rec))).Inc()
+
+		switch dec.Type(rec) {
+		case tsdb.RecordSeries:
+			series, err := dec.Series(rec, series[:0])
+			if err != nil {
+				w.recordDecodeFailsMetric.Inc()
+				return err
 			}
+			w.writer.StoreSeries(series, segmentNum)
+
+		case tsdb.RecordSamples:
+			// If we're not tailing a segment we can ignore any samples records we see.
+			// This speeds up replay of the WAL by > 10x.
+			if !tail {
+				break
+			}
+			samples, err := dec.Samples(rec, samples[:0])
+			if err != nil {
+				w.recordDecodeFailsMetric.Inc()
+				return err
+			}
+			var send []tsdb.RefSample
+			for _, s := range samples {
+				if s.T > w.startTime {
+					send = append(send, s)
+				}
+			}
+			if len(send) > 0 {
+				// Blocks  until the sample is sent to all remote write endpoints or closed (because enqueue blocks).
+				w.writer.Append(send)
+			}
+
+		case tsdb.RecordTombstones:
+			// noop
+		case tsdb.RecordInvalid:
+			return errors.New("invalid record")
+
+		default:
+			w.recordDecodeFailsMetric.Inc()
+			return errors.New("unknown TSDB record type")
 		}
-		if len(send) > 0 {
-			// We don't want to count samples read prior to the starting timestamp
-			// so that we can compare samples in vs samples read and succeeded samples.
-			w.samplesReadMetric.Add(float64(len(samples)))
-			// Blocks  until the sample is sent to all remote write endpoints or closed (because enqueue blocks).
-			w.writer.Append(send)
-		}
-
-	case tsdb.RecordTombstones:
-		w.tombstonesReadMetric.Add(float64(len(samples)))
-
-	case tsdb.RecordInvalid:
-		w.invalidReadMetric.Add(float64(len(samples)))
-		return errors.New("invalid record")
-
-	default:
-		w.recordDecodeFailsMetric.Inc()
-		return errors.New("unknown TSDB record type")
 	}
-	return nil
+	return r.Err()
+}
+
+func recordType(rt tsdb.RecordType) string {
+	switch rt {
+	case tsdb.RecordInvalid:
+		return "invalid"
+	case tsdb.RecordSeries:
+		return "series"
+	case tsdb.RecordSamples:
+		return "samples"
+	case tsdb.RecordTombstones:
+		return "tombstones"
+	default:
+		return "unknown"
+	}
 }
 
 // Read all the series records from a Checkpoint directory.
 func (w *WALWatcher) readCheckpoint(checkpointDir string) error {
-	level.Info(w.logger).Log("msg", "reading checkpoint", "dir", checkpointDir)
+	level.Debug(w.logger).Log("msg", "reading checkpoint", "dir", checkpointDir)
+	index, err := checkpointNum(checkpointDir)
+	if err != nil {
+		return errors.Wrap(err, "checkpointNum")
+	}
+
 	sr, err := wal.NewSegmentsReader(checkpointDir)
 	if err != nil {
-		return errors.Wrap(err, "open checkpoint")
+		return errors.Wrap(err, "NewSegmentsReader")
 	}
 	defer sr.Close()
 
 	size, err := getCheckpointSize(checkpointDir)
 	if err != nil {
-		level.Error(w.logger).Log("msg", "error getting checkpoint size", "checkpoint", checkpointDir)
-		return errors.Wrap(err, "get checkpoint size")
+		return errors.Wrap(err, "getCheckpointSize")
 	}
 
-	// w.readSeriesRecords(wal.NewLiveReader(sr), i, size)
-	r := wal.NewLiveReader(sr)
-	w.readSegment(r)
-	if r.TotalRead() != size {
-		level.Warn(w.logger).Log("msg", "may not have read all data from checkpoint")
+	r := wal.NewLiveReader(w.logger, sr)
+	if err := w.readSegment(r, index, false); err != io.EOF {
+		return errors.Wrap(err, "readSegment")
+	}
+
+	if r.Offset() != size {
+		level.Warn(w.logger).Log("msg", "may not have read all data from checkpoint", "totalRead", r.Offset(), "size", size)
 	}
 	level.Debug(w.logger).Log("msg", "read series references from checkpoint", "checkpoint", checkpointDir)
+
 	return nil
 }
 
