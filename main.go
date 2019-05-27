@@ -1,14 +1,15 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
-	"context"
 	"github.com/gogo/protobuf/proto"
 	"github.com/golang/snappy"
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,7 +20,6 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/prompb"
 	"github.com/prometheus/prometheus/storage/remote"
-	"net/url"
 )
 
 var (
@@ -44,7 +44,7 @@ var (
 		Help: "Count of all HTTP requests",
 	}, []string{"code", "method"})
 
-	testSummary = prometheus.NewSummary( prometheus.SummaryOpts{
+	testSummary = prometheus.NewSummary(prometheus.SummaryOpts{
 		Name: "hello_world",
 		ConstLabels: map[string]string{
 			"reason": "test",
@@ -114,7 +114,6 @@ func main() {
 		},
 	}
 
-
 	cl, err := remote.NewClient(0, &conf)
 	if err != nil {
 		log.Fatal(err)
@@ -134,10 +133,10 @@ func main() {
 }
 
 // It will write data in every 5s
-func remoteWrite(cl *remote.Client, ctx context.Context, r prometheus.Gatherer, stopCh chan struct{})  {
+func remoteWrite(cl *remote.Client, ctx context.Context, r prometheus.Gatherer, stopCh chan struct{}) {
 	for {
 		select {
-		case <-time.After(5*time.Second):
+		case <-time.After(5 * time.Second):
 			mfs, err := r.Gather()
 			if err != nil {
 				log.Println(err)
@@ -185,7 +184,7 @@ func metricFamilyToTimeseries(mfs []*dto.MetricFamily) ([]prompb.TimeSeries, err
 					Labels: metricToLabels(s.Metric),
 					Samples: []prompb.Sample{
 						{
-							Value: float64(s.Value),
+							Value:     float64(s.Value),
 							Timestamp: int64(s.Timestamp),
 						},
 					},
@@ -200,13 +199,12 @@ func metricToLabels(m model.Metric) []prompb.Label {
 	lables := []prompb.Label{}
 	for k, v := range m {
 		lables = append(lables, prompb.Label{
-			Name: string(k),
+			Name:  string(k),
 			Value: string(v),
 		})
 	}
 	return lables
 }
-
 
 // https://github.com/prometheus/prometheus/blob/84df210c410a0684ec1a05479bfa54458562695e/storage/remote/queue_manager.go#L759
 func buildWriteRequest(samples []prompb.TimeSeries) ([]byte, error) {
