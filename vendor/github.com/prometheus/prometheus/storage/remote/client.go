@@ -159,7 +159,7 @@ func (c *Client) Read(ctx context.Context, query *prompb.Query) (*prompb.QueryRe
 		return nil, errors.Errorf("server returned HTTP status %s", httpResp.Status)
 	}
 
-	compressed, err = ioutil.ReadAll(httpResp.Body)
+	compressed, err = io.ReadAll(httpResp.Body)
 	if err != nil {
 		return nil, errors.Wrap(err, "error reading response")
 	}

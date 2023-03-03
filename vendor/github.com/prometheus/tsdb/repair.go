@@ -117,7 +117,7 @@ func repairBadIndexVersion(logger log.Logger, dir string) error {
 }
 
 func readBogusMetaFile(dir string) (*BlockMeta, error) {
-	b, err := ioutil.ReadFile(filepath.Join(dir, metaFilename))
+	b, err := os.ReadFile(filepath.Join(dir, metaFilename))
 	if err != nil {
 		return nil, err
 	}

@@ -262,5 +262,5 @@ func fourLetterWord(server, command string, timeout time.Duration) ([]byte, erro
 	}
 
 	conn.SetReadDeadline(time.Now().Add(timeout))
-	return ioutil.ReadAll(conn)
+	return io.ReadAll(conn)
 }

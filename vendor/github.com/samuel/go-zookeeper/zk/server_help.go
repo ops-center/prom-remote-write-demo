@@ -27,7 +27,7 @@ type TestCluster struct {
 }
 
 func StartTestCluster(size int, stdout, stderr io.Writer) (*TestCluster, error) {
-	tmpPath, err := ioutil.TempDir("", "gozk")
+	tmpPath, err := os.MkdirTemp("", "gozk")
 	if err != nil {
 		return nil, err
 	}

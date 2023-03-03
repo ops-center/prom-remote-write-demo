@@ -130,7 +130,7 @@ type Stone struct {
 }
 
 func readTombstones(dir string) (TombstoneReader, SizeReader, error) {
-	b, err := ioutil.ReadFile(filepath.Join(dir, tombstoneFilename))
+	b, err := os.ReadFile(filepath.Join(dir, tombstoneFilename))
 	if os.IsNotExist(err) {
 		return newMemTombstones(), nil, nil
 	} else if err != nil {

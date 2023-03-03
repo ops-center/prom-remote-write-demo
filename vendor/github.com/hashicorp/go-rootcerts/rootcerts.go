@@ -55,7 +55,7 @@ func LoadCACerts(c *Config) (*x509.CertPool, error) {
 func LoadCAFile(caFile string) (*x509.CertPool, error) {
 	pool := x509.NewCertPool()
 
-	pem, err := ioutil.ReadFile(caFile)
+	pem, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, fmt.Errorf("Error loading CA File: %s", err)
 	}
@@ -81,7 +81,7 @@ func LoadCAPath(caPath string) (*x509.CertPool, error) {
 			return nil
 		}
 
-		pem, err := ioutil.ReadFile(path)
+		pem, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("Error loading file from CAPath: %s", err)
 		}

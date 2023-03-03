@@ -361,7 +361,7 @@ func (d *Discovery) readFile(filename string) ([]*targetgroup.Group, error) {
 	}
 	defer fd.Close()
 
-	content, err := ioutil.ReadAll(fd)
+	content, err := io.ReadAll(fd)
 	if err != nil {
 		return nil, err
 	}
